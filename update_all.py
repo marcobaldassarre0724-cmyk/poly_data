@@ -1,5 +1,6 @@
 import os
-import subprocess
+import urllib.request
+import lzma
 
 from update_utils.update_markets import update_markets
 from update_utils.update_goldsky import update_goldsky
@@ -11,8 +12,12 @@ def download_snapshot():
     if not os.path.isfile("goldsky/orderFilled.csv"):
         print("Downloading data snapshot...")
         os.makedirs("goldsky", exist_ok=True)
-        subprocess.run(["curl", "-L", SNAPSHOT_URL, "-o", "goldsky/orderFilled.csv.xz"], check=True)
-        subprocess.run(["xz", "-d", "goldsky/orderFilled.csv.xz"], check=True)
+        xz_path = "goldsky/orderFilled.csv.xz"
+        urllib.request.urlretrieve(SNAPSHOT_URL, xz_path)
+        print("Extracting...")
+        with lzma.open(xz_path) as f_in, open("goldsky/orderFilled.csv", "wb") as f_out:
+            f_out.write(f_in.read())
+        os.remove(xz_path)
         print("Snapshot ready!")
     else:
         print("Snapshot already exists, skipping download")

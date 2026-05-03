@@ -2,7 +2,7 @@ import os
 import time
 import urllib.request
 import lzma
-
+import shutil
 from update_utils.update_markets import update_markets
 from update_utils.update_goldsky import update_goldsky
 from update_utils.process_live import process_live
@@ -19,7 +19,7 @@ def download_snapshot():
         urllib.request.urlretrieve(SNAPSHOT_URL, xz_path)
         print("Extracting...")
         with lzma.open(xz_path) as f_in, open(csv_path, "wb") as f_out:
-            f_out.write(f_in.read())
+            shutil.copyfileobj(f_in, f_out)
         os.remove(xz_path)
         print("Snapshot ready!")
     else:

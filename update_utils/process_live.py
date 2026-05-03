@@ -99,9 +99,8 @@ def get_processed_df(df):
     return df
 
 
-
 def process_live():
-    processed_file = 'processed/trades.csv'
+    processed_file = 'data/processed/trades.csv'
 
     print("=" * 60)
     print("🔄 Processing Live Trades")
@@ -127,7 +126,7 @@ def process_live():
     else:
         print("⚠ No existing processed file found - processing from beginning")
 
-    print(f"\n📂 Reading: goldsky/orderFilled.csv")
+    print(f"\n📂 Reading: data/goldsky/orderFilled.csv")
 
     schema_overrides = {
         "takerAssetId": pl.Utf8,
@@ -136,7 +135,7 @@ def process_live():
         "takerAmountFilled": pl.Utf8,
     }
 
-    df = pl.scan_csv("goldsky/orderFilled.csv", schema_overrides=schema_overrides).collect(streaming=True)
+    df = pl.scan_csv("data/goldsky/orderFilled.csv", schema_overrides=schema_overrides).collect(streaming=True)
     df = df.with_columns([
         pl.col("makerAmountFilled").cast(pl.Float64, strict=False),
         pl.col("takerAmountFilled").cast(pl.Float64, strict=False),
@@ -166,23 +165,23 @@ def process_live():
     print(f"⚙️  Processing {len(df_process):,} new rows...")
 
     new_df = get_processed_df(df_process)
-    
-    if not os.path.isdir('processed'):
-        os.makedirs('processed')
 
-    op_file = 'processed/trades.csv'
+    if not os.path.isdir('data/processed'):
+        os.makedirs('data/processed')
+
+    op_file = 'data/processed/trades.csv'
 
     if not os.path.isfile(op_file):
         new_df.write_csv(op_file)
-        print(f"✓ Created new file: processed/trades.csv")
+        print(f"✓ Created new file: data/processed/trades.csv")
     else:
-        print(f"✓ Appending {len(new_df):,} rows to processed/trades.csv")
+        print(f"✓ Appending {len(new_df):,} rows to data/processed/trades.csv")
         with open(op_file, mode="a") as f:
             new_df.write_csv(f, include_header=False)
 
     print("=" * 60)
     print("✅ Processing complete!")
     print("=" * 60)
-    
+
 if __name__ == "__main__":
     process_live()

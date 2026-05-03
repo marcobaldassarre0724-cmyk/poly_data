@@ -95,7 +95,6 @@ def get_processed_df(df):
         .alias("price")
     ])
 
-
     df = df[['timestamp', 'market_id', 'maker', 'taker', 'nonusdc_side', 'maker_direction', 'taker_direction', 'price', 'usd_amount', 'token_amount', 'transactionHash']]
     return df
 
@@ -133,9 +132,15 @@ def process_live():
     schema_overrides = {
         "takerAssetId": pl.Utf8,
         "makerAssetId": pl.Utf8,
+        "makerAmountFilled": pl.Utf8,
+        "takerAmountFilled": pl.Utf8,
     }
 
     df = pl.scan_csv("goldsky/orderFilled.csv", schema_overrides=schema_overrides).collect(streaming=True)
+    df = df.with_columns([
+        pl.col("makerAmountFilled").cast(pl.Float64, strict=False),
+        pl.col("takerAmountFilled").cast(pl.Float64, strict=False),
+    ])
     df = df.with_columns(
         pl.from_epoch(pl.col('timestamp'), time_unit='s').alias('timestamp')
     )
@@ -165,7 +170,6 @@ def process_live():
     if not os.path.isdir('processed'):
         os.makedirs('processed')
 
-
     op_file = 'processed/trades.csv'
 
     if not os.path.isfile(op_file):
@@ -176,7 +180,6 @@ def process_live():
         with open(op_file, mode="a") as f:
             new_df.write_csv(f, include_header=False)
 
-    
     print("=" * 60)
     print("✅ Processing complete!")
     print("=" * 60)

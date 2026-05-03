@@ -2,7 +2,6 @@ import os
 import time
 import urllib.request
 import lzma
-import shutil
 from update_utils.update_markets import update_markets
 from update_utils.update_goldsky import update_goldsky
 from update_utils.process_live import process_live
@@ -13,13 +12,32 @@ DATA_DIR = "/app/data"
 def download_snapshot():
     csv_path = os.path.join(DATA_DIR, "goldsky/orderFilled.csv")
     if not os.path.isfile(csv_path):
-        print("Downloading data snapshot...")
         os.makedirs(os.path.join(DATA_DIR, "goldsky"), exist_ok=True)
         xz_path = csv_path + ".xz"
-        urllib.request.urlretrieve(SNAPSHOT_URL, xz_path)
+
+        # Stream download in chunks
+        print("Downloading snapshot...")
+        with urllib.request.urlopen(SNAPSHOT_URL) as response, open(xz_path, "wb") as f:
+            chunk_size = 8 * 1024 * 1024  # 8MB chunks
+            downloaded = 0
+            while True:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                print(f"Downloaded {downloaded / 1024 / 1024:.0f} MB...")
+
+        # Stream extraction in chunks
         print("Extracting...")
         with lzma.open(xz_path) as f_in, open(csv_path, "wb") as f_out:
-            shutil.copyfileobj(f_in, f_out)
+            chunk_size = 8 * 1024 * 1024  # 8MB chunks
+            while True:
+                chunk = f_in.read(chunk_size)
+                if not chunk:
+                    break
+                f_out.write(chunk)
+
         os.remove(xz_path)
         print("Snapshot ready!")
     else:

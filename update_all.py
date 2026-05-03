@@ -10,15 +10,14 @@ SNAPSHOT_URL = "https://polydata-archive.s3.us-east-1.amazonaws.com/orderFilled_
 DATA_DIR = "/app/data"
 
 def download_snapshot():
-    csv_path = os.path.join(DATA_DIR, "goldsky/orderFilled.csv")
+    csv_path = os.path.join(DATA_DIR, "goldsky", "orderFilled.csv")
     if not os.path.isfile(csv_path):
         os.makedirs(os.path.join(DATA_DIR, "goldsky"), exist_ok=True)
         xz_path = csv_path + ".xz"
 
-        # Stream download in chunks
         print("Downloading snapshot...")
         with urllib.request.urlopen(SNAPSHOT_URL) as response, open(xz_path, "wb") as f:
-            chunk_size = 8 * 1024 * 1024  # 8MB chunks
+            chunk_size = 8 * 1024 * 1024
             downloaded = 0
             while True:
                 chunk = response.read(chunk_size)
@@ -28,10 +27,9 @@ def download_snapshot():
                 downloaded += len(chunk)
                 print(f"Downloaded {downloaded / 1024 / 1024:.0f} MB...")
 
-        # Stream extraction in chunks
         print("Extracting...")
         with lzma.open(xz_path) as f_in, open(csv_path, "wb") as f_out:
-            chunk_size = 8 * 1024 * 1024  # 8MB chunks
+            chunk_size = 8 * 1024 * 1024
             while True:
                 chunk = f_in.read(chunk_size)
                 if not chunk:
@@ -45,7 +43,7 @@ def download_snapshot():
 
 if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
-    os.chdir(DATA_DIR)
+    os.chdir("/app")
     download_snapshot()
     while True:
         print("Running pipeline...")

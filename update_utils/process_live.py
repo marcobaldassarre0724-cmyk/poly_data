@@ -13,6 +13,7 @@ import pandas as pd
 
 CHUNK_SIZE = 5_000_000  # rows per chunk — adjust down if Railway still OOMs
 
+
 def get_processed_df(df: pl.DataFrame, last_price_df: pl.DataFrame, markets_long: pl.DataFrame) -> pl.DataFrame:
     """
     Process a chunk of raw trades into the final schema.
@@ -20,7 +21,7 @@ def get_processed_df(df: pl.DataFrame, last_price_df: pl.DataFrame, markets_long
     markets_long: pre-computed market side lookup
     """
 
-    # 2) Identify the non-USDC asset for each trade
+    # Identify the non-USDC asset for each trade
     df = df.with_columns(
         pl.when(pl.col("makerAssetId") != "0")
         .then(pl.col("makerAssetId"))
@@ -28,7 +29,7 @@ def get_processed_df(df: pl.DataFrame, last_price_df: pl.DataFrame, markets_long
         .alias("nonusdc_asset_id")
     )
 
-    # 3) Join to recover market + side
+    # Join to recover market + side
     df = df.join(
         markets_long,
         left_on="nonusdc_asset_id",
@@ -36,7 +37,7 @@ def get_processed_df(df: pl.DataFrame, last_price_df: pl.DataFrame, markets_long
         how="left",
     )
 
-    # 4) Label columns
+    # Label columns
     df = df.with_columns([
         pl.when(pl.col("makerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("makerAsset"),
         pl.when(pl.col("takerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("takerAsset"),
@@ -120,15 +121,15 @@ def process_live():
               variable_name="side", value_name="asset_id")
     )
 
-    # --- Pass 1: Compute last_price per (market_id, nonusdc_side) lazily ---
-    print("\n📊 Pass 1: Computing last_price per market side (lazy scan)...")
-
     schema_overrides = {
         "takerAssetId": pl.Utf8,
         "makerAssetId": pl.Utf8,
         "makerAmountFilled": pl.Utf8,
         "takerAmountFilled": pl.Utf8,
     }
+
+    # --- Pass 1: Compute last_price per (market_id, nonusdc_side) lazily ---
+    print("\n📊 Pass 1: Computing last_price per market side (lazy scan)...")
 
     lazy = pl.scan_csv(input_file, schema_overrides=schema_overrides)
 
@@ -138,7 +139,7 @@ def process_live():
         pl.from_epoch(pl.col('timestamp'), time_unit='s').alias('timestamp'),
     ])
 
-    # Identify nonusdc_asset_id lazily
+    # Identify nonusdc_asset_id
     lazy = lazy.with_columns(
         pl.when(pl.col("makerAssetId") != "0")
         .then(pl.col("makerAssetId"))
@@ -154,26 +155,27 @@ def process_live():
         how="left",
     )
 
-    # Compute price lazily
+    # Derive makerAsset and takerAsset labels AFTER the join using raw IDs + side
     lazy = lazy.with_columns([
+        pl.when(pl.col("makerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("makerAsset"),
+        pl.when(pl.col("takerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("takerAsset"),
+    ])
+
+    # Compute nonusdc_side and price using the labeled columns
+    lazy = lazy.with_columns([
+        pl.when(pl.col("makerAsset") != "USDC")
+        .then(pl.col("makerAsset"))
+        .otherwise(pl.col("takerAsset"))
+        .alias("nonusdc_side"),
+
         pl.when(pl.col("takerAsset") == "USDC")
         .then(pl.col("takerAmountFilled") / pl.col("makerAmountFilled"))
         .otherwise(pl.col("makerAmountFilled") / pl.col("takerAmountFilled"))
         .cast(pl.Float64)
         .alias("price"),
-
-        pl.when(pl.col("makerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("makerAsset"),
-        pl.when(pl.col("takerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("takerAsset"),
     ])
 
-    lazy = lazy.with_columns(
-        pl.when(pl.col("makerAsset") != "USDC")
-        .then(pl.col("makerAsset"))
-        .otherwise(pl.col("takerAsset"))
-        .alias("nonusdc_side")
-    )
-
-    # Get last price per (market_id, nonusdc_side)
+    # Aggregate last price per (market_id, nonusdc_side)
     last_price_df = (
         lazy
         .group_by(["market_id", "nonusdc_side"])
@@ -205,7 +207,6 @@ def process_live():
         print(f"📍 Resuming from row {start_row:,}")
     else:
         print("⚠ Starting from beginning")
-        # Clear any partial output
         if os.path.isfile(processed_file):
             os.remove(processed_file)
 

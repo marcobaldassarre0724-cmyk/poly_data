@@ -64,6 +64,7 @@ def process_live():
         input_file,
         schema_overrides=schema_overrides,
         batch_size=CHUNK_SIZE,
+        truncate_ragged_lines=True,
     )
 
     while True:

@@ -6,95 +6,9 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import polars as pl
-from poly_utils.utils import get_markets, update_missing_tokens
+from poly_utils.utils import get_markets
 
-import subprocess
-import pandas as pd
-
-CHUNK_SIZE = 5_000_000  # rows per chunk — adjust down if Railway still OOMs
-
-
-def get_processed_df(df: pl.DataFrame, last_price_df: pl.DataFrame, markets_long: pl.DataFrame) -> pl.DataFrame:
-    """
-    Process a chunk of raw trades into the final schema.
-    last_price_df: pre-computed last_price per (market_id, nonusdc_side)
-    markets_long: pre-computed market side lookup
-    """
-
-    # Identify the non-USDC asset for each trade
-    df = df.with_columns(
-        pl.when(pl.col("makerAssetId") != "0")
-        .then(pl.col("makerAssetId"))
-        .otherwise(pl.col("takerAssetId"))
-        .alias("nonusdc_asset_id")
-    )
-
-    # Join to recover market + side
-    df = df.join(
-        markets_long,
-        left_on="nonusdc_asset_id",
-        right_on="asset_id",
-        how="left",
-    )
-
-    # Label columns
-    df = df.with_columns([
-        pl.when(pl.col("makerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("makerAsset"),
-        pl.when(pl.col("takerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("takerAsset"),
-        pl.col("market_id"),
-    ])
-
-    df = df[['timestamp', 'market_id', 'maker', 'makerAsset', 'makerAmountFilled', 'taker', 'takerAsset', 'takerAmountFilled', 'transactionHash']]
-
-    df = df.with_columns([
-        (pl.col("makerAmountFilled") / 10**6).alias("makerAmountFilled"),
-        (pl.col("takerAmountFilled") / 10**6).alias("takerAmountFilled"),
-    ])
-
-    df = df.with_columns([
-        pl.when(pl.col("takerAsset") == "USDC")
-        .then(pl.lit("BUY"))
-        .otherwise(pl.lit("SELL"))
-        .alias("taker_direction"),
-
-        pl.when(pl.col("takerAsset") == "USDC")
-        .then(pl.lit("SELL"))
-        .otherwise(pl.lit("BUY"))
-        .alias("maker_direction"),
-    ])
-
-    df = df.with_columns([
-        pl.when(pl.col("makerAsset") != "USDC")
-        .then(pl.col("makerAsset"))
-        .otherwise(pl.col("takerAsset"))
-        .alias("nonusdc_side"),
-
-        pl.when(pl.col("takerAsset") == "USDC")
-        .then(pl.col("takerAmountFilled"))
-        .otherwise(pl.col("makerAmountFilled"))
-        .alias("usd_amount"),
-
-        pl.when(pl.col("takerAsset") != "USDC")
-        .then(pl.col("takerAmountFilled"))
-        .otherwise(pl.col("makerAmountFilled"))
-        .alias("token_amount"),
-
-        pl.when(pl.col("takerAsset") == "USDC")
-        .then(pl.col("takerAmountFilled") / pl.col("makerAmountFilled"))
-        .otherwise(pl.col("makerAmountFilled") / pl.col("takerAmountFilled"))
-        .cast(pl.Float64)
-        .alias("price"),
-    ])
-
-    # Join pre-computed last_price
-    df = df.join(
-        last_price_df,
-        on=["market_id", "nonusdc_side"],
-        how="left",
-    )
-
-    df = df[['timestamp', 'market_id', 'maker', 'taker', 'nonusdc_side', 'maker_direction', 'taker_direction', 'price', 'usd_amount', 'token_amount', 'transactionHash']]
-    return df
+CHUNK_SIZE = 2_000_000  # rows per chunk
 
 
 def process_live():
@@ -110,7 +24,10 @@ def process_live():
         print(f"❌ Input file not found: {input_file}")
         return
 
-    # --- Load markets ---
+    if not os.path.isdir('data/processed'):
+        os.makedirs('data/processed')
+
+    # Load markets
     markets_df = get_markets()
     markets_df = markets_df.rename({'id': 'market_id'})
 
@@ -128,78 +45,7 @@ def process_live():
         "takerAmountFilled": pl.Utf8,
     }
 
-    # --- Pass 1: Compute last_price per (market_id, nonusdc_side) lazily ---
-    print("\n📊 Pass 1: Computing last_price per market side (lazy scan)...")
-
-    lazy = pl.scan_csv(input_file, schema_overrides=schema_overrides)
-
-    lazy = lazy.with_columns([
-        pl.col("makerAmountFilled").cast(pl.Float64, strict=False),
-        pl.col("takerAmountFilled").cast(pl.Float64, strict=False),
-        pl.from_epoch(pl.col('timestamp'), time_unit='s').alias('timestamp'),
-    ])
-
-    # Identify nonusdc_asset_id
-    lazy = lazy.with_columns(
-        pl.when(pl.col("makerAssetId") != "0")
-        .then(pl.col("makerAssetId"))
-        .otherwise(pl.col("takerAssetId"))
-        .alias("nonusdc_asset_id")
-    )
-
-    # Join markets_long to get market_id and side
-    lazy = lazy.join(
-        markets_long.lazy(),
-        left_on="nonusdc_asset_id",
-        right_on="asset_id",
-        how="left",
-    )
-
-    # Derive makerAsset and takerAsset labels AFTER the join using raw IDs + side
-    lazy = lazy.with_columns([
-        pl.when(pl.col("makerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("makerAsset"),
-        pl.when(pl.col("takerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("takerAsset"),
-    ])
-
-    # Compute nonusdc_side and price using the labeled columns
-    lazy = lazy.with_columns([
-        pl.when(pl.col("makerAsset") != "USDC")
-        .then(pl.col("makerAsset"))
-        .otherwise(pl.col("takerAsset"))
-        .alias("nonusdc_side"),
-
-        pl.when(pl.col("takerAsset") == "USDC")
-        .then(pl.col("takerAmountFilled") / pl.col("makerAmountFilled"))
-        .otherwise(pl.col("makerAmountFilled") / pl.col("takerAmountFilled"))
-        .cast(pl.Float64)
-        .alias("price"),
-    ])
-
-    # Aggregate last price per (market_id, nonusdc_side)
-    last_price_df = (
-        lazy
-        .group_by(["market_id", "nonusdc_side"])
-        .agg(
-            pl.col("price").sort_by("timestamp").last().alias("last_price")
-        )
-        .with_columns(
-            pl.when(pl.col("last_price") > 0.98).then(pl.lit(1.0))
-             .when(pl.col("last_price") < 0.02).then(pl.lit(0.0))
-             .otherwise(pl.col("last_price"))
-             .alias("last_price")
-        )
-        .collect()
-    )
-
-    print(f"✓ Computed last_price for {len(last_price_df):,} market sides")
-
-    # --- Pass 2: Process in chunks ---
-    print(f"\n⚙️  Pass 2: Processing in chunks of {CHUNK_SIZE:,} rows...")
-
-    if not os.path.isdir('data/processed'):
-        os.makedirs('data/processed')
-
-    # Check resume point
+    # Resume point
     start_row = 0
     if os.path.isfile(progress_file) and os.path.isfile(processed_file):
         with open(progress_file, 'r') as f:
@@ -230,47 +76,98 @@ def process_live():
         chunk_end = row_index + len(chunk)
         row_index = chunk_end
 
-        # Skip already-processed chunks
+        # Skip already processed
         if chunk_end <= start_row:
             chunk_num += 1
             continue
 
-        # Partial resume: trim rows already processed
+        # Trim partial chunk on resume
         if chunk_start < start_row:
             chunk = chunk.slice(start_row - chunk_start)
 
         chunk_num += 1
         print(f"  Chunk {chunk_num}: rows {chunk_start:,}-{chunk_end:,} ({len(chunk):,} rows)...")
 
-        # Cast amount columns
+        # Cast amounts
         chunk = chunk.with_columns([
             pl.col("makerAmountFilled").cast(pl.Float64, strict=False),
             pl.col("takerAmountFilled").cast(pl.Float64, strict=False),
+            pl.from_epoch(pl.col('timestamp'), time_unit='s').alias('timestamp'),
         ])
 
-        # Parse timestamp
+        # Identify non-USDC asset
         chunk = chunk.with_columns(
-            pl.from_epoch(pl.col('timestamp'), time_unit='s').alias('timestamp')
+            pl.when(pl.col("makerAssetId") != "0")
+            .then(pl.col("makerAssetId"))
+            .otherwise(pl.col("takerAssetId"))
+            .alias("nonusdc_asset_id")
         )
 
-        # Process chunk
-        processed_chunk = get_processed_df(chunk, last_price_df, markets_long)
+        # Join market info
+        chunk = chunk.join(markets_long, left_on="nonusdc_asset_id", right_on="asset_id", how="left")
 
-        # Write output
+        # Label asset sides
+        chunk = chunk.with_columns([
+            pl.when(pl.col("makerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("makerAsset"),
+            pl.when(pl.col("takerAssetId") == "0").then(pl.lit("USDC")).otherwise(pl.col("side")).alias("takerAsset"),
+            pl.col("market_id"),
+        ])
+
+        # Compute trade fields
+        chunk = chunk.with_columns([
+            pl.when(pl.col("makerAsset") != "USDC")
+            .then(pl.col("makerAsset"))
+            .otherwise(pl.col("takerAsset"))
+            .alias("nonusdc_side"),
+
+            pl.when(pl.col("takerAsset") == "USDC")
+            .then(pl.lit("BUY"))
+            .otherwise(pl.lit("SELL"))
+            .alias("taker_direction"),
+
+            pl.when(pl.col("takerAsset") == "USDC")
+            .then(pl.lit("SELL"))
+            .otherwise(pl.lit("BUY"))
+            .alias("maker_direction"),
+
+            pl.when(pl.col("takerAsset") == "USDC")
+            .then(pl.col("takerAmountFilled"))
+            .otherwise(pl.col("makerAmountFilled"))
+            .alias("usd_amount"),
+
+            pl.when(pl.col("takerAsset") != "USDC")
+            .then(pl.col("takerAmountFilled"))
+            .otherwise(pl.col("makerAmountFilled"))
+            .alias("token_amount"),
+
+            pl.when(pl.col("takerAsset") == "USDC")
+            .then(pl.col("takerAmountFilled") / pl.col("makerAmountFilled"))
+            .otherwise(pl.col("makerAmountFilled") / pl.col("takerAmountFilled"))
+            .cast(pl.Float64)
+            .alias("price"),
+
+            # last_price skipped — set to null, resolved markets dominate scoring anyway
+            pl.lit(None).cast(pl.Float64).alias("last_price"),
+        ])
+
+        output = chunk.select([
+            'timestamp', 'market_id', 'maker', 'taker',
+            'nonusdc_side', 'maker_direction', 'taker_direction',
+            'price', 'usd_amount', 'token_amount', 'transactionHash'
+        ])
+
         if first_write:
-            processed_chunk.write_csv(processed_file)
+            output.write_csv(processed_file)
             first_write = False
         else:
             with open(processed_file, mode="a") as f:
-                processed_chunk.write_csv(f, include_header=False)
+                output.write_csv(f, include_header=False)
 
-        # Save progress
         with open(progress_file, 'w') as f:
             f.write(str(chunk_end))
 
-        print(f"  ✓ Wrote {len(processed_chunk):,} rows | Progress saved at row {chunk_end:,}")
+        print(f"  ✓ Wrote {len(output):,} rows | Progress saved at row {chunk_end:,}")
 
-    # Clean up progress file on success
     if os.path.isfile(progress_file):
         os.remove(progress_file)
 

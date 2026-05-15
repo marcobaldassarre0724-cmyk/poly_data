@@ -3,7 +3,6 @@ import csv
 import json
 import os
 import time
-from typing import List, Dict
 
 
 def count_csv_lines(csv_filename: str) -> int:
@@ -12,14 +11,14 @@ def count_csv_lines(csv_filename: str) -> int:
     try:
         with open(csv_filename, 'r', encoding='utf-8') as csvfile:
             reader = csv.reader(csvfile)
-            next(reader, None)
+            next(reader, None)  # skip header
             return sum(1 for row in reader if row)
     except Exception as e:
         print(f"Error reading CSV: {e}")
         return 0
 
 
-def update_markets(csv_filename: str = "markets.csv", batch_size: int = 500):
+def update_markets(csv_filename: str = "markets.csv", batch_size: int = 100):
     base_url = "https://gamma-api.polymarket.com/markets"
 
     headers = [
@@ -59,7 +58,6 @@ def update_markets(csv_filename: str = "markets.csv", batch_size: int = 500):
                 response = requests.get(base_url, params=params, timeout=30)
 
                 if response.status_code == 422:
-                    # Polymarket has a hard offset limit — treat as end of data
                     print(f"API error 422: {response.text}")
                     if "offset exceeds maximum" in response.text:
                         print("Reached Polymarket's offset limit. Markets fetch complete.")
@@ -86,8 +84,9 @@ def update_markets(csv_filename: str = "markets.csv", batch_size: int = 500):
 
                 markets = response.json()
 
+                # Only stop on empty response — not on small batches
                 if not markets:
-                    print(f"No more markets found at offset {current_offset}. Completed!")
+                    print("No more markets returned. Fetch complete.")
                     break
 
                 batch_count = 0
@@ -147,10 +146,6 @@ def update_markets(csv_filename: str = "markets.csv", batch_size: int = 500):
                 current_offset += batch_count
 
                 print(f"Processed {batch_count} markets. Total new: {total_fetched}. Next offset: {current_offset}")
-
-                if len(markets) < batch_size:
-                    print(f"Received only {len(markets)} markets (less than batch size). Reached end.")
-                    break
 
             except requests.exceptions.RequestException as e:
                 print(f"Network error: {e}")

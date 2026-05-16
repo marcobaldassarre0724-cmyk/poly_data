@@ -27,6 +27,14 @@ def process_live():
     if not os.path.isdir('data/processed'):
         os.makedirs('data/processed')
 
+    # If already complete, skip entirely
+    if os.path.isfile(progress_file):
+        with open(progress_file, 'r') as f:
+            saved = f.read().strip()
+        if saved == "COMPLETE":
+            print("✅ trades.csv already complete. Skipping processing.")
+            return
+
     # Load markets
     markets_df = get_markets()
     markets_df = markets_df.rename({'id': 'market_id'})
@@ -169,8 +177,9 @@ def process_live():
 
         print(f"  ✓ Wrote {len(output):,} rows | Progress saved at row {chunk_end:,}")
 
-    if os.path.isfile(progress_file):
-        os.remove(progress_file)
+    # Write COMPLETE sentinel so next hourly cycle skips reprocessing
+    with open(progress_file, 'w') as f:
+        f.write("COMPLETE")
 
     print("\n" + "=" * 60)
     print("✅ Processing complete!")
